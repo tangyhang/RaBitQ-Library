@@ -398,7 +398,13 @@ inline void IVF::search(
     nprobe = std::min(nprobe, num_cluster_);  // corner case
     std::vector<float> rotated_query(padded_dim_);
     this->rotator_->rotate(query, rotated_query.data());
-
+    //输出第一个query的前五个值
+    // std::cout << "Rotated query first 5 values: ";
+    for (size_t i = 0; i < std::min(static_cast<size_t>(5), padded_dim_); ++i) {
+        std::cout << rotated_query[i] << " ";
+    }
+    std::cout << std::endl;
+    
     // use initer to get closest nprobe centroids
     std::vector<AnnCandidate<float>> centroid_dist(nprobe);
     this->initer_->centroids_distances(rotated_query.data(), nprobe, centroid_dist);
@@ -409,9 +415,15 @@ inline void IVF::search(
         rotated_query.data(), padded_dim_, ex_bits_, metric_type_, use_hacc
     );
 
+    static int debug_count = 0;
+    bool do_debug = (debug_count < 1); 
+
     for (size_t i = 0; i < nprobe; ++i) {
         PID cid = centroid_dist[i].id;
         float dist = centroid_dist[i].distance;
+        if (do_debug) {
+            std::cout << "Probing cluster " << cid << " with centroid distance " << dist << std::endl;
+        }
         const Cluster& cur_cluster = cluster_lst_[cid];
 
         if (metric_type_ == METRIC_L2) {
@@ -429,6 +441,15 @@ inline void IVF::search(
         }
         // q_obj.set_g_add(dist);
         search_cluster(cur_cluster, q_obj, knns, use_hacc);
+    }
+    if (do_debug) {
+        //输出前10个候选的ID和距离
+        std::cout << "Top " << k << " candidates after searching clusters: ";
+        for (size_t i = 0; i < std::min(k, static_cast<size_t>(10)); ++i) {
+            std::cout << "ID: " << knns.data()[i].id << ", Distance: " << knns.data()[i].distance << " ";
+        }
+        std::cout << std::endl;
+        debug_count++; // increment debug count to avoid printing in subsequent calls
     }
 
     knns.copy_results(results);
@@ -490,6 +511,19 @@ inline void IVF::scan_one_batch(
 
     float distk = knns.top_dist();
 
+    // =================================================================
+    // 🌟 Debug Hook: 仅打印前 1 个 Batch 的信息防止终端卡死
+    // =================================================================
+    static int debug_batch_count = 0;
+    // bool do_debug = (debug_batch_count < 1); 
+    bool do_debug = false; 
+    if (do_debug) {
+        std::cout << "\n========== [CPU Debug] Batch Scan Start (Batch " << debug_batch_count << ") ==========" << std::endl;
+        std::cout << "num_points: " << num_points << " | ex_bits: " << ex_bits_ 
+                  << " | Initial distk (Threshold): " << distk << std::endl;
+        std::cout << "--------------------------------------------------------" << std::endl;
+    }
+
     // if only use 1-bit code, directly return
     if (ex_bits_ == 0) {
         for (size_t i = 0; i < num_points; ++i) {
@@ -504,16 +538,38 @@ inline void IVF::scan_one_batch(
     // incremental distance computation - V2
     for (size_t i = 0; i < num_points; ++i) {
         float lower_dist = low_distance[i];
+        PID id = ids[i];
+        if (do_debug) {
+            std::cout << "  ├─ Phase 1 -> est_dist: " << est_distance[i] 
+                      << ", low_dist: " << lower_dist 
+                      << ", ip_x0_qr (1-bit IP): " << ip_x0_qr[i] << "\n"
+                      << "  ├─ Pruning -> Check: low_dist (" << lower_dist << ") < distk (" << distk << ") ? ";
+        }
         if (lower_dist < distk) {
-            PID id = ids[i];
             ConstExDataMap<float> cur_ex(ex_data, padded_dim_, ex_bits_);
+            if (do_debug) {
+                std::cout << "  ├─ Phase 2 -> Ex Factors: f_add_ex = " << cur_ex.f_add_ex() 
+                          << ", f_rescale_ex = " << cur_ex.f_rescale_ex() << std::endl;
+            }
             float ex_dist = split_distance_boosting(
                 ex_data, ip_func_, q_obj, padded_dim_, ex_bits_, ip_x0_qr[i]
             );
+            if (do_debug) {
+                std::cout << "  └─ Result  -> Final ex_dist: " << ex_dist << std::endl;
+            }
             knns.insert(id, ex_dist);
             distk = knns.top_dist();
+            if (do_debug) {
+                std::cout << "     [State] -> Queue updated. New distk: " << distk << std::endl;
+            }
         }
         ex_data += ExDataMap<float>::data_bytes(padded_dim_, ex_bits_);
     }
+    if (do_debug) {
+        std::cout << "==================================================================\n" << std::endl;
+        debug_batch_count++;
+    }
+
+    
 }
 }  // namespace rabitqlib::ivf

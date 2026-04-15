@@ -20,7 +20,7 @@ static std::vector<size_t> get_nprobes(
 );
 
 static size_t topk = 100;
-static size_t test_round = 5;
+static size_t test_round = 1;
 
 int main(int argc, char** argv) {
     if (argc < 4) {
@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
     gt_type gt;
     rabitqlib::load_vecs<float, data_type>(query_file, query);
     rabitqlib::load_vecs<uint32_t, gt_type>(gt_file, gt);
+    // size_t nq = 1;
     size_t nq = query.rows();
     size_t total_count = nq * topk;
 
@@ -58,22 +59,22 @@ int main(int argc, char** argv) {
 
     std::vector<size_t> all_nprobes;
     all_nprobes.push_back(5);
-    for (size_t i = 10; i < 200; i += 10) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 200; i < 400; i += 40) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 400; i <= 1500; i += 100) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 2000; i <= 4000; i += 500) {
-        all_nprobes.push_back(i);
-    }
+    // for (size_t i = 10; i < 200; i += 10) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 200; i < 400; i += 40) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 400; i <= 1500; i += 100) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 2000; i <= 4000; i += 500) {
+    //     all_nprobes.push_back(i);
+    // }
 
-    all_nprobes.push_back(6000);
-    all_nprobes.push_back(10000);
-    all_nprobes.push_back(15000);
+    // all_nprobes.push_back(6000);
+    // all_nprobes.push_back(10000);
+    // all_nprobes.push_back(15000);
 
     rabitqlib::StopW stopw;
 
@@ -82,6 +83,50 @@ int main(int argc, char** argv) {
 
     std::vector<std::vector<float>> all_qps(test_round, std::vector<float>(length));
     std::vector<std::vector<float>> all_recall(test_round, std::vector<float>(length));
+
+    // for (size_t r = 0; r < test_round; r++) {
+    //     for (size_t l = 0; l < length; ++l) {
+    //         size_t nprobe = nprobes[l];
+    //         // ... (省略 nprobe 检查代码) ...
+    //         if (nprobe > ivf.num_clusters()) {
+    //             std::cout << "nprobe " << nprobe << " is larger than number of clusters, ";
+    //             std::cout << "will use nprobe = num_cluster (" << ivf.num_clusters() << ").\n";
+    //         }
+    //         size_t total_correct = 0;
+    //         float total_time = 0;
+
+    //         // 设置线程数，建议不要设置太大，因为 GPU 任务分发有开销
+    //         #pragma omp parallel for reduction(+ : total_correct, total_time) num_threads(8)
+    //         for (size_t i = 0; i < nq; i++) {
+    //             // 关键：每个线程必须有自己独立的 stopw 和 results 缓冲区
+    //             rabitqlib::StopW local_stopw; 
+    //             std::vector<PID> local_results(topk);
+
+    //             local_stopw.reset();
+    //             // 执行搜索
+    //             ivf.search(&query(i, 0), topk, nprobe, local_results.data(), use_hacc);
+    //             total_time += local_stopw.get_elapsed_micro();
+
+    //             // 计算 Recall (命中数)
+    //             for (size_t j = 0; j < topk; j++) {
+    //                 for (size_t k = 0; k < topk; k++) {
+    //                     if (gt(i, k) == local_results[j]) {
+    //                         total_correct++;
+    //                         break;
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         // 这里的 QPS 是基于线程累计时间的平均值
+    //         // 注意：如果是为了测吞吐量，并行统计时间通常用外层的 Wall-clock time
+    //         float qps = static_cast<float>(nq) / (total_time / 1e6F);
+    //         float recall = static_cast<float>(total_correct) / static_cast<float>(total_count);
+
+    //         all_qps[r][l] = qps;
+    //         all_recall[r][l] = recall;
+    //     }
+    // }
 
     for (size_t r = 0; r < test_round; r++) {
         for (size_t l = 0; l < length; ++l) {

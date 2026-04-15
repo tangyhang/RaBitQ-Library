@@ -68,6 +68,38 @@ inline void split_batch_estdist(
         f_add_arr + q_obj.g_add() + f_rescale_arr * (ip_x0_qr_arr + q_obj.k1xsumq());
 
     low_dist_arr = est_dist_arr - f_error_arr * q_obj.g_error();
+    static int debug_est_count = 0;
+    if (debug_est_count == 0) {
+        std::cout << "\n========== [CPU Debug Deep Dive] Phase 1 (Vector 0 Short Data) ==========\n";
+        
+        // 1. 从 AVX 交织格式中解包 Vector 0 的 1-bit 数据
+        const uint32_t* batch_codes = reinterpret_cast<const uint32_t*>(cur_batch.bin_code());
+        
+        std::cout << "  ├─ Short Code Bits (Vector 0 的前 32 维): ";
+        for (size_t d = 0; d < std::min(padded_dim, (size_t)32); ++d) {
+            // 因为 batch_codes[d] 包含了所有 32 个向量在维度 d 的 bit
+            // 我们通过右移 0 位 (>> 0) 来获取 Vector 0 的 bit。
+            uint32_t bit_val = (batch_codes[d] >> 0) & 1; 
+            std::cout << bit_val;
+            if ((d + 1) % 8 == 0) std::cout << " ";
+        }
+        std::cout << "...\n";
+
+        // 2. 打印查询的 LUT 常量和 LUT 状态
+        std::cout << "  ├─ Query Constants:\n"
+                  << "  │  delta (LUT 缩放因子): " << q_obj.delta() << "\n"
+                  << "  │  sum_vl_lut (偏移量): " << q_obj.sum_vl_lut() << "\n"
+                  << "  │  k1xsumq            : " << q_obj.k1xsumq() << "\n";
+
+        // 3. 打印累加器状态
+        std::cout << "  ├─ LUT Accumulation Check (Vector 0):\n"
+                  << "  │  accu_arr[0]: " << accu_arr.data()[0] << "\n"
+                  << "  └─ Final ip_x0_qr[0] = (delta * accu_arr) + sum_vl_lut\n"
+                  << "                       = (" << q_obj.delta() << " * " << accu_arr.data()[0] << ") + " << q_obj.sum_vl_lut() << "\n"
+                  << "                       = " << ip_x0_qr_arr.data()[0] << "\n";
+        std::cout << "=========================================================================\n";
+        debug_est_count++;
+    }
 }
 
 /**
@@ -92,12 +124,66 @@ inline float split_distance_boosting(
     float ip_x0_qr
 ) {
     ConstExDataMap<float> cur_ex(ex_data, padded_dim, ex_bits);
+    // 把内部函数的长码内积单独提取出来，方便打印对比
+    float exact_long_ip = ip_func_(q_obj.rotated_query(), cur_ex.ex_code(), padded_dim);
 
     float ex_dist =
         cur_ex.f_add_ex() + q_obj.g_add() +
         (cur_ex.f_rescale_ex() *
          (static_cast<float>(1 << ex_bits) * ip_x0_qr +
           ip_func_(q_obj.rotated_query(), cur_ex.ex_code(), padded_dim) + q_obj.kbxsumq()));
+    
+    static int debug_boost_count = 0;
+    if (debug_boost_count < 2) { // 打印前两次被调用的情况
+        std::cout << "\n========== [CPU Debug Deep Dive] Phase 3 (Vector 0 Long Data) ==========\n";
+        
+        const uint8_t* raw_long_code = cur_ex.ex_code();
+        const float* rot_query = q_obj.rotated_query();
+        size_t long_code_bytes = (padded_dim * ex_bits + 7) / 8;
+        float ip2 = 0.0f;
+
+        std::cout << "  ├─ Raw Long Code Bytes (First 16 Bytes Hex): ";
+        for(size_t b = 0; b < std::min(long_code_bytes, (size_t)16); ++b) {
+            printf("%02X ", raw_long_code[b]);
+        }
+        std::cout << "...\n";
+
+        std::cout << "  ├─ Dimension-wise Multiplication (First 8 Dims):\n";
+        // 简单模拟前 8 个维度的长码提取 (假设是 3-bit 或 4-bit)
+        for (size_t d = 0; d < padded_dim; ++d) {
+            size_t bit_idx = d * ex_bits;
+            size_t byte_idx = bit_idx / 8;
+            size_t bit_offset = bit_idx % 8;
+            
+            uint32_t val = raw_long_code[byte_idx];
+            if (byte_idx + 1 < long_code_bytes) {
+                val |= (raw_long_code[byte_idx + 1] << 8);
+            }
+            // 注意：CPU 官方 ip_func_ 通常是 LSB-first 小端提取
+            uint32_t code_val = (val >> bit_offset) & ((1 << ex_bits) - 1);
+            ip2 += rot_query[d] * (float)code_val;
+            std::cout << "  │  ├─ Dim " << d << ", Query: " << rot_query[d] 
+                      << ", Extracted Code: " << code_val 
+                      << ", Product: " << rot_query[d] * (float)code_val << "\n";
+        }
+        
+        std::cout << "  └─ Final ip2: " << ip2 << "\n";
+        std::cout << "========================================================================\n";
+
+        std::cout << "\n========== [CPU Debug Deep Dive] Phase 2/3/4 (Call " << debug_boost_count << ") ==========\n";
+        std::cout << "  [Ex Factors]   f_add_ex: " << cur_ex.f_add_ex() 
+                  << ", f_rescale_ex: " << cur_ex.f_rescale_ex() << "\n"
+                  << "  [Query Consts] g_add: " << q_obj.g_add() 
+                  << ", kbxsumq: " << q_obj.kbxsumq() << "\n"
+                  << "  [Phase 1 Input] ip_x0_qr: " << ip_x0_qr << "\n"
+                  << "  [Phase 3 Calc] exact_long_ip (ip_func result): " << exact_long_ip << "\n"
+                  << "  [Formula Dump] " << cur_ex.f_add_ex() << " + " << q_obj.g_add() << " + "
+                  << cur_ex.f_rescale_ex() << " * (" << static_cast<float>(1 << ex_bits) << " * " 
+                  << ip_x0_qr << " + " << exact_long_ip << " + " << q_obj.kbxsumq() << ")\n"
+                  << "  [Final Result] ex_dist: " << ex_dist << "\n";
+        std::cout << "========================================================================\n";
+        debug_boost_count++;
+    }
 
     return ex_dist;
 }
