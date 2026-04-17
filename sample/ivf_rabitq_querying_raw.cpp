@@ -283,11 +283,11 @@ int main(int argc, char** argv) {
         cpu_ivf.rotator_->rotate(query.data() + i * cpu_ivf.dim_, rotated_queries.data() + i * padded_dim);
     }
 
-    std::vector<size_t> nprobes = {5,10,20,40,60,80,100,150,200}; 
+    std::vector<size_t> nprobes = {5,10,20,40,60,80,100,150,200,300,400,500}; 
     size_t length = nprobes.size();
 
     std::cout << "Allocating GPU Workspace pool..." << std::endl;
-    size_t max_nprobe = 200; // 列表中最大的 nprobe
+    size_t max_nprobe = 500; // 列表中最大的 nprobe
     gpu_ivf.prepare_workspace(nq, topk, max_nprobe);
 
     // 记录测试结果

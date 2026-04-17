@@ -74,7 +74,7 @@ struct ComputeBitwiseKernelParams {
     const float* d_widths;            // Query 量化的缩放宽度
     const float* d_G_k1xSumq;         // Query 的预计算因子
     const float* d_centroid_distances;// 步骤1中算出的 Query 到 Centroid 距离
-    const float* d_threshold; // 每个 Query 的当前 topk 距离阈值 (用于动态剪枝)
+    float* d_threshold; // 每个 Query 的当前 topk 距离阈值 (用于动态剪枝)
     
     // 底库相关
     const uint32_t* d_short_data;     // 1-bit 底库数据

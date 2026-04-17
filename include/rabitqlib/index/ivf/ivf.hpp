@@ -400,10 +400,10 @@ inline void IVF::search(
     this->rotator_->rotate(query, rotated_query.data());
     //输出第一个query的前五个值
     // std::cout << "Rotated query first 5 values: ";
-    for (size_t i = 0; i < std::min(static_cast<size_t>(5), padded_dim_); ++i) {
-        std::cout << rotated_query[i] << " ";
-    }
-    std::cout << std::endl;
+    // for (size_t i = 0; i < std::min(static_cast<size_t>(5), padded_dim_); ++i) {
+    //     std::cout << rotated_query[i] << " ";
+    // }
+    // std::cout << std::endl;
     
     // use initer to get closest nprobe centroids
     std::vector<AnnCandidate<float>> centroid_dist(nprobe);
