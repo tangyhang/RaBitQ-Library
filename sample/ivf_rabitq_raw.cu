@@ -524,7 +524,7 @@ __global__ void computeInnerProductsWithBitwiseOptExactPruning(const ComputeBitw
     __syncthreads();
 
     // 🌟 记录起点：屏蔽了加载 Query 的开销，直接测算核心逻辑
-    if (block_id <= 50 && tid == 0) t_start = clock64();
+    if (block_id % 20 == 0 && tid == 0) t_start = clock64();
 
     __shared__ int num_passed;
     if (tid == 0) num_passed = 0;
@@ -564,9 +564,9 @@ __global__ void computeInnerProductsWithBitwiseOptExactPruning(const ComputeBitw
         float3 factors = reinterpret_cast<const float3*>(params.d_short_factors)[global_idx];
         
         float low_dist = factors.x + q_g_add + factors.y * (exact_ip + q_k1xsumq) - factors.z * q_g_error;
-        if (block_id <= 50 && tid == 0) {
-            printf("Block %d, Candidate %d: exact_ip=%.4f, low_dist=%.4f, threshold=%.4f\n", block_id, c, exact_ip, low_dist, threshold);
-        }
+        // if (tid == 0) {
+        //     printf("Block %d, Candidate %d: exact_ip=%.4f, low_dist=%.4f, threshold=%.4f\n", block_id, c, exact_ip, low_dist, threshold);
+        // }
         if (low_dist < threshold) {
             int slot = atomicAdd(&num_passed, 1);
             if (slot < params.max_candidates_per_pair) {
@@ -577,7 +577,7 @@ __global__ void computeInnerProductsWithBitwiseOptExactPruning(const ComputeBitw
     __syncthreads();
 
     // 🌟 记录阶段 1 结束
-    if (block_id <= 50 && tid == 0) t_phase1 = clock64();
+    if (block_id % 20 == 0 && tid == 0) t_phase1 = clock64();
 
     // 全局写入偏移
     __shared__ int probe_slot;
@@ -623,7 +623,7 @@ __global__ void computeInnerProductsWithBitwiseOptExactPruning(const ComputeBitw
     __syncthreads();
 
     // 🌟 记录阶段 2 结束
-    if (block_id <= 50 && tid == 0) t_phase2 = clock64();
+    if (block_id % 20 == 0 && tid == 0) t_phase2 = clock64();
 
     // -------------------------------------------------------------
     // 阶段 3 & 4：K-pass 极速规约 BlockSort & 更新阈值
@@ -683,8 +683,13 @@ __global__ void computeInnerProductsWithBitwiseOptExactPruning(const ComputeBitw
     }
 
     // 🌟 记录阶段 3 & 4 结束并打印
-    if (block_id <= 50 && tid == 0) {
+    if (block_id % 20 == 0 && tid == 0) {
         t_phase3 = clock64();
+        float prune_rate = 0.0f;
+        if (actual_cands > 0) {
+            prune_rate = (float)(actual_cands - passed) / (float)actual_cands * 100.0f;
+        }
+        // printf("Block %d, Prune_rate=%.2f%%, Phase 1: %lld cycles, Phase 2: %lld cycles\n", block_id, prune_rate, t_phase1 - t_start, t_phase2 - t_phase1);
         // printf("\n========== [Kernel Internal Profiler (Block 0)] ==========\n");
         // printf("  ├─ 1. Phase 1 (1-bit IP + Prune) : %lld cycles\n", t_phase1 - t_start);
         // printf("  ├─ 2. Phase 2 (Long Code IP2)    : %lld cycles\n", t_phase2 - t_phase1);

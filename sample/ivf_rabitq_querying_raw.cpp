@@ -19,7 +19,7 @@
 using data_type = rabitqlib::RowMajorArray<float>;
 using gt_type = rabitqlib::RowMajorArray<uint32_t>;
 
-static size_t topk = 10;
+static size_t topk = 100;
 static size_t test_round = 1; // 跑5轮取平均以稳定 GPU 耗时测试
 
 float get_const_scaling_factors(size_t dim, size_t ex_bits)
@@ -283,7 +283,7 @@ int main(int argc, char** argv) {
         cpu_ivf.rotator_->rotate(query.data() + i * cpu_ivf.dim_, rotated_queries.data() + i * padded_dim);
     }
 
-    std::vector<size_t> nprobes = {5,10,20,40,60,80,100,150,200,300,400,500}; 
+    std::vector<size_t> nprobes = {5, 10, 20, 50, 100, 200, 500}; // 不同 nprobe 设置
     size_t length = nprobes.size();
 
     std::cout << "Allocating GPU Workspace pool..." << std::endl;
