@@ -93,6 +93,10 @@ class SearchBuffer {
         return is_full() ? data_[size_ - 1].distance : std::numeric_limits<T>::max();
     }
 
+    T min_dist() const {
+        return data_[0].distance;
+    }
+
     [[nodiscard]] auto is_full() const -> bool { return size_ == capacity_; }
 
     // judge if dist can be inserted into buffer

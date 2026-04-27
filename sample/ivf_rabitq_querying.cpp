@@ -56,28 +56,30 @@ int main(int argc, char** argv) {
     index_type ivf;
     ivf.load(index_file);
 
-    std::vector<size_t> all_nprobes;
-    all_nprobes.push_back(5);
-    for (size_t i = 10; i < 200; i += 10) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 200; i < 400; i += 40) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 400; i <= 1500; i += 100) {
-        all_nprobes.push_back(i);
-    }
-    for (size_t i = 2000; i <= 4000; i += 500) {
-        all_nprobes.push_back(i);
-    }
+    // std::vector<size_t> all_nprobes;
+    // all_nprobes.push_back(5);
+    // for (size_t i = 10; i < 200; i += 10) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 200; i < 400; i += 40) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 400; i <= 1500; i += 100) {
+    //     all_nprobes.push_back(i);
+    // }
+    // for (size_t i = 2000; i <= 4000; i += 500) {
+    //     all_nprobes.push_back(i);
+    // }
 
-    all_nprobes.push_back(6000);
-    all_nprobes.push_back(10000);
-    all_nprobes.push_back(15000);
+    // all_nprobes.push_back(6000);
+    // all_nprobes.push_back(10000);
+    // all_nprobes.push_back(15000);
 
     rabitqlib::StopW stopw;
 
-    auto nprobes = get_nprobes(ivf, all_nprobes, query, gt);
+    // auto nprobes = get_nprobes(ivf, all_nprobes, query, gt);
+
+    std::vector<size_t> nprobes = {200};
     size_t length = nprobes.size();
 
     std::vector<std::vector<float>> all_qps(test_round, std::vector<float>(length));

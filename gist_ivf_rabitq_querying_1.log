@@ -1,0 +1,12 @@
+nohup: 忽略输入
+File /home/ANNS_SSD/RabitQ/gist/gist_query.fvecs loaded
+Rows 1000 Cols 960
+File /home/ANNS_SSD/RabitQ/gist/gist_groundtruth.ivecs loaded
+Rows 1000 Cols 100
+Loading IVF...
+	Loading meta data...
+FhtKacRotator is selected
+Allocating memory for IVF...
+Index loaded
+nprobe	QPS	recall
+900	169.856	0.75134

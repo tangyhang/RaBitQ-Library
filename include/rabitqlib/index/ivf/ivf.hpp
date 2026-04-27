@@ -24,6 +24,42 @@
 #include "rabitqlib/utils/rotator.hpp"
 #include "rabitqlib/utils/space.hpp"
 
+#include <chrono>
+#include <iostream>
+#include <iomanip>
+
+// 定义一个用于记录单个 Search 状态的结构体
+struct QueryStats {
+    double time_1bit_ms = 0.0;     // 1-bit 评估总时间
+    double time_inc_ms = 0.0;      // 增量精修总时间
+    size_t total_vectors = 0;      // 评估的向量总数
+    size_t survived_vectors = 0;   // 剪枝后保留的向量数（进入精修阶段）
+
+    void reset() {
+        time_1bit_ms = 0.0;
+        time_inc_ms = 0.0;
+        total_vectors = 0;
+        survived_vectors = 0;
+    }
+
+    void print() const {
+        double total_time = time_1bit_ms + time_inc_ms;
+        double survival_rate = total_vectors > 0 ? (survived_vectors * 100.0 / total_vectors) : 0.0;
+        double ratio_1bit = total_time > 0 ? (time_1bit_ms * 100.0 / total_time) : 0.0;
+        double ratio_inc = total_time > 0 ? (time_inc_ms * 100.0 / total_time) : 0.0;
+
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "Vectors Scanned : " << total_vectors;
+        std::cout << "   Vectors Survived: " << survived_vectors 
+                  << " (Survival Rate: " << survival_rate << "%)";
+        std::cout << "   1-bit Eval Time : " << time_1bit_ms << " ms (" << ratio_1bit << "%)";
+        std::cout << "   Incremental Time: " << time_inc_ms << " ms (" << ratio_inc << "%)" << std::endl;
+    }
+};
+
+// 使用 thread_local 保证在 OpenMP 或多线程并发查询时，每个线程有自己独立的统计器
+thread_local QueryStats tls_query_stats;
+
 namespace rabitqlib::ivf {
 class IVF {
    private:
@@ -286,7 +322,7 @@ inline void IVF::quantize_cluster(
             ex_bits_,
             batch_data,
             ex_data,
-            metric_type_,
+            metric_type_, 
             config
         );
 
@@ -388,6 +424,135 @@ inline void IVF::load(const char* filename) {
     std::cout << "Index loaded\n";
 }
 
+// inline void IVF::search(
+//     const float* __restrict__ query,
+//     size_t k,
+//     size_t nprobe,
+//     PID* __restrict__ results,
+//     bool use_hacc = true
+// ) const {
+//     nprobe = std::min(nprobe, num_cluster_);  // corner case
+//     std::vector<float> rotated_query(padded_dim_);
+//     this->rotator_->rotate(query, rotated_query.data());
+
+//     // use initer to get closest nprobe centroids
+//     std::vector<AnnCandidate<float>> centroid_dist(nprobe);
+//     this->initer_->centroids_distances(rotated_query.data(), nprobe, centroid_dist);
+
+//     buffer::SearchBuffer knns(k);
+
+//     SplitBatchQuery<float> q_obj(
+//         rotated_query.data(), padded_dim_, ex_bits_, metric_type_, use_hacc
+//     );
+
+//     for (size_t i = 0; i < nprobe; ++i) {
+//         PID cid = centroid_dist[i].id;
+//         float dist = centroid_dist[i].distance;
+//         const Cluster& cur_cluster = cluster_lst_[cid];
+
+//         if (metric_type_ == METRIC_L2) {
+//             q_obj.set_g_add(dist);
+//         } else if (metric_type_ == METRIC_IP) {
+//             auto g_add_ip = dot_product<float>(
+//                 rotated_query.data(), initer_->centroid(cid), padded_dim_
+//             );
+//             q_obj.set_g_add(dist, g_add_ip);
+//         } else {
+//             // unsupported
+//             std::cerr << "Invalid quantize metric type, only support L2 and IP metric\n "
+//                       << std::flush;
+//             return;
+//         }
+//         // q_obj.set_g_add(dist);
+//         search_cluster(cur_cluster, q_obj, knns, use_hacc);
+//     }
+
+//     knns.copy_results(results);
+// }
+
+// inline void IVF::search_cluster(
+//     const Cluster& cur_cluster,
+//     const SplitBatchQuery<float>& q_obj,
+//     buffer::SearchBuffer<float>& knns,
+//     bool use_hacc
+// ) const {
+//     size_t iter = cur_cluster.num() / fastscan::kBatchSize;
+//     size_t remain = cur_cluster.num() - (iter * fastscan::kBatchSize);
+
+//     const char* batch_data = cur_cluster.batch_data();
+//     const char* ex_data = cur_cluster.ex_data();
+//     const PID* ids = cur_cluster.ids();
+
+//     /* Compute distances block by block */
+//     for (size_t i = 0; i < iter; ++i) {
+//         scan_one_batch(
+//             batch_data, ex_data, ids, q_obj, knns, fastscan::kBatchSize, use_hacc
+//         );
+
+//         batch_data += BatchDataMap<float>::data_bytes(padded_dim_);
+//         ex_data +=
+//             ExDataMap<float>::data_bytes(padded_dim_, ex_bits_) * fastscan::kBatchSize;
+//         ids += fastscan::kBatchSize;
+//     }
+
+//     if (remain > 0) {
+//         // scan the last block
+//         scan_one_batch(batch_data, ex_data, ids, q_obj, knns, remain, use_hacc);
+//     }
+// }
+
+// inline void IVF::scan_one_batch(
+//     const char* batch_data,
+//     const char* ex_data,
+//     const PID* ids,
+//     const SplitBatchQuery<float>& q_obj,
+//     buffer::SearchBuffer<float>& knns,
+//     size_t num_points,
+//     bool use_hacc
+// ) const {
+//     std::array<float, fastscan::kBatchSize> est_distance;  // estimated distance
+//     std::array<float, fastscan::kBatchSize> low_distance;  // lower distance
+//     std::array<float, fastscan::kBatchSize> ip_x0_qr;      // inner product of the 1st bit
+
+//     split_batch_estdist(
+//         batch_data,
+//         q_obj,
+//         padded_dim_,
+//         est_distance.data(),
+//         low_distance.data(),
+//         ip_x0_qr.data(),
+//         use_hacc
+//     );
+
+//     float distk = knns.top_dist();
+
+//     // if only use 1-bit code, directly return
+//     if (ex_bits_ == 0) {
+//         for (size_t i = 0; i < num_points; ++i) {
+//             PID id = ids[i];
+//             float ex_dist = est_distance[i];
+//             knns.insert(id, ex_dist);
+//             distk = knns.top_dist();
+//         }
+//         return;
+//     }
+
+//     // incremental distance computation - V2
+//     for (size_t i = 0; i < num_points; ++i) {
+//         float lower_dist = low_distance[i];
+//         if (lower_dist < distk) {
+//             PID id = ids[i];
+//             ConstExDataMap<float> cur_ex(ex_data, padded_dim_, ex_bits_);
+//             float ex_dist = split_distance_boosting(
+//                 ex_data, ip_func_, q_obj, padded_dim_, ex_bits_, ip_x0_qr[i]
+//             );
+//             knns.insert(id, ex_dist);
+//             distk = knns.top_dist();
+//         }
+//         ex_data += ExDataMap<float>::data_bytes(padded_dim_, ex_bits_);
+//     }
+// }
+
 inline void IVF::search(
     const float* __restrict__ query,
     size_t k,
@@ -395,6 +560,9 @@ inline void IVF::search(
     PID* __restrict__ results,
     bool use_hacc = true
 ) const {
+    // 【新增】：每次进入 search 时清空当前线程的统计数据
+    tls_query_stats.reset();
+
     nprobe = std::min(nprobe, num_cluster_);  // corner case
     std::vector<float> rotated_query(padded_dim_);
     this->rotator_->rotate(query, rotated_query.data());
@@ -422,16 +590,17 @@ inline void IVF::search(
             );
             q_obj.set_g_add(dist, g_add_ip);
         } else {
-            // unsupported
             std::cerr << "Invalid quantize metric type, only support L2 and IP metric\n "
                       << std::flush;
             return;
         }
-        // q_obj.set_g_add(dist);
         search_cluster(cur_cluster, q_obj, knns, use_hacc);
     }
 
     knns.copy_results(results);
+
+    // 【新增】：一次完整的 query 搜索结束后，打印统计信息
+    tls_query_stats.print();
 }
 
 inline void IVF::search_cluster(
@@ -454,8 +623,7 @@ inline void IVF::search_cluster(
         );
 
         batch_data += BatchDataMap<float>::data_bytes(padded_dim_);
-        ex_data +=
-            ExDataMap<float>::data_bytes(padded_dim_, ex_bits_) * fastscan::kBatchSize;
+        ex_data += ExDataMap<float>::data_bytes(padded_dim_, ex_bits_) * fastscan::kBatchSize;
         ids += fastscan::kBatchSize;
     }
 
@@ -474,23 +642,24 @@ inline void IVF::scan_one_batch(
     size_t num_points,
     bool use_hacc
 ) const {
+    // 【新增】：累加该批次扫描的总向量数
+    tls_query_stats.total_vectors += num_points;
+
     std::array<float, fastscan::kBatchSize> est_distance;  // estimated distance
     std::array<float, fastscan::kBatchSize> low_distance;  // lower distance
     std::array<float, fastscan::kBatchSize> ip_x0_qr;      // inner product of the 1st bit
 
+    // 【新增】：统计 1-bit 距离估算时间
+    auto t1 = std::chrono::high_resolution_clock::now();
     split_batch_estdist(
-        batch_data,
-        q_obj,
-        padded_dim_,
-        est_distance.data(),
-        low_distance.data(),
-        ip_x0_qr.data(),
-        use_hacc
+        batch_data, q_obj, padded_dim_, est_distance.data(),
+        low_distance.data(), ip_x0_qr.data(), use_hacc
     );
+    auto t2 = std::chrono::high_resolution_clock::now();
+    tls_query_stats.time_1bit_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
 
     float distk = knns.top_dist();
 
-    // if only use 1-bit code, directly return
     if (ex_bits_ == 0) {
         for (size_t i = 0; i < num_points; ++i) {
             PID id = ids[i];
@@ -501,10 +670,15 @@ inline void IVF::scan_one_batch(
         return;
     }
 
-    // incremental distance computation - V2
+    // 【新增】：统计增量精修距离计算时间
+    auto t3 = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < num_points; ++i) {
         float lower_dist = low_distance[i];
+        
         if (lower_dist < distk) {
+            // 【新增】：通过剪枝下界，进入精修的向量
+            tls_query_stats.survived_vectors++;
+            
             PID id = ids[i];
             ConstExDataMap<float> cur_ex(ex_data, padded_dim_, ex_bits_);
             float ex_dist = split_distance_boosting(
@@ -515,5 +689,7 @@ inline void IVF::scan_one_batch(
         }
         ex_data += ExDataMap<float>::data_bytes(padded_dim_, ex_bits_);
     }
+    auto t4 = std::chrono::high_resolution_clock::now();
+    tls_query_stats.time_inc_ms += std::chrono::duration<double, std::milli>(t4 - t3).count();
 }
 }  // namespace rabitqlib::ivf
