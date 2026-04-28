@@ -12,7 +12,7 @@
 #include <cub/cub.cuh>
 
 // 引入头文件
-#include "rabitqlib/index/ivf_rabitq_raw_cuvs.cuh"
+#include "rabitqlib/index/ivf_rabitq_raw.cuh"
 
 // 辅助函数：带有严格边界保护的 extract_code
 __device__ inline uint32_t extract_code(const uint8_t* ptr, uint32_t dim, uint32_t ex_bits, uint32_t max_bytes) {
@@ -222,6 +222,7 @@ IVF_RaBitQ_Raw::~IVF_RaBitQ_Raw() {
 void IVF_RaBitQ_Raw::load_from_raw_pointers(
         size_t num_vecs, size_t d, size_t p_d, size_t n_centroids, size_t ex_b,
         const float* h_centroids,
+        const float* h_rotator,
         const uint32_t* h_short_data, 
         const float* h_short_factors,
         const uint8_t* h_long_codes,
@@ -249,6 +250,11 @@ void IVF_RaBitQ_Raw::load_from_raw_pointers(
     size_t centroids_bytes = num_centroids * padded_dim * sizeof(float);
     CUDA_CHECK(cudaMallocAsync(&d_centroids, centroids_bytes, stream));
     CUDA_CHECK(cudaMemcpyAsync(d_centroids, h_centroids, centroids_bytes, cudaMemcpyHostToDevice, stream));
+
+    // 上传旋转矩阵 (D x PaddedD)
+    size_t rotator_bytes = dim * padded_dim * sizeof(float);
+    CUDA_CHECK(cudaMallocAsync(&d_rotator, rotator_bytes, stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_rotator, h_rotator, rotator_bytes, cudaMemcpyHostToDevice, stream));
 
     // 上传我们自己重排好的 1-bit Codes 和 Factors
     size_t short_data_bytes = num_vectors * (padded_dim / 32) * sizeof(uint32_t);
@@ -295,6 +301,7 @@ void IVF_RaBitQ_Raw::prepare_workspace(size_t max_queries, size_t max_topk, size
 
     // 一次性分配所有可能会在 Search 中用到的临时显存
     CUDA_CHECK(cudaMallocAsync(&ws_d_queries, max_queries * padded_dim * sizeof(float), stream));
+    CUDA_CHECK(cudaMallocAsync(&ws_d_raw_queries, max_queries * dim * sizeof(float), stream));
     CUDA_CHECK(cudaMallocAsync(&ws_d_centroid_dists, max_queries * num_centroids * sizeof(float), stream));
     CUDA_CHECK(cudaMallocAsync(&ws_d_centroid_dists_copy, max_queries * num_centroids * sizeof(float), stream));
     CUDA_CHECK(cudaMallocAsync(&ws_d_q_norms, max_queries * sizeof(float), stream));
@@ -314,6 +321,7 @@ void IVF_RaBitQ_Raw::prepare_workspace(size_t max_queries, size_t max_topk, size
 
 void IVF_RaBitQ_Raw::free_workspace() {
     if(ws_d_queries) cudaFree(ws_d_queries);
+    if(ws_d_raw_queries) cudaFree(ws_d_raw_queries);
     if(ws_d_centroid_dists) cudaFree(ws_d_centroid_dists);
     if(ws_d_centroid_dists_copy) cudaFree(ws_d_centroid_dists_copy);
     if(ws_d_q_norms) cudaFree(ws_d_q_norms);
@@ -709,6 +717,7 @@ void IVF_RaBitQ_Raw::search(const float* h_queries, size_t num_queries, size_t t
 
     // 将预分配好的显存指针映射到局部变量，避免重写后续业务代码
     float* d_queries              = ws_d_queries;
+    float* d_raw_queries          = ws_d_raw_queries;
     float* d_centroid_dists       = ws_d_centroid_dists;
     float* d_centroid_dists_copy  = ws_d_centroid_dists_copy;
     float* d_q_norms              = ws_d_q_norms;
@@ -744,11 +753,28 @@ void IVF_RaBitQ_Raw::search(const float* h_queries, size_t num_queries, size_t t
     // =========================================================
     // 0. Query 数据拷贝 (H2D)
     // =========================================================
+    // TICK();
+    // size_t queries_bytes = num_queries * padded_dim * sizeof(float);
+    // CUDA_CHECK(cudaMemcpyAsync(d_queries, h_queries, queries_bytes, cudaMemcpyHostToDevice, stream));
+    // CUDA_CHECK(cudaStreamSynchronize(stream));
+    // TOCK("0. Query H2D Transfer");
+
     TICK();
-    size_t queries_bytes = num_queries * padded_dim * sizeof(float);
-    CUDA_CHECK(cudaMemcpyAsync(d_queries, h_queries, queries_bytes, cudaMemcpyHostToDevice, stream));
+    size_t raw_bytes = num_queries * dim * sizeof(float);
+    CUDA_CHECK(cudaMemcpyAsync(d_raw_queries, h_queries, raw_bytes, cudaMemcpyHostToDevice, stream));
+    TOCK("0. Raw Query H2D Transfer");
+
+    // 🌟 0.5 GPU 旋转：Q_rotated = Q_raw * Rotator
+    // 对应 cuBLAS 列主序计算：(Q_rotated)^T = (Rotator)^T * (Q_raw)^T
+    TICK();
+    const float alpha_rot = 1.0f; const float beta_rot = 0.0f;
+    cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, 
+                padded_dim, num_queries, dim,
+                &alpha_rot, d_rotator, padded_dim, 
+                d_raw_queries, dim, 
+                &beta_rot, d_queries, padded_dim);
     CUDA_CHECK(cudaStreamSynchronize(stream));
-    TOCK("0. Query H2D Transfer");
+    TOCK("0.5. Query Rotation (cuBLAS)");
 
     // =========================================================
     // 1. 粗量化检索 (CUBLAS GEMM)

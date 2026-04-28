@@ -9,7 +9,7 @@
 #include "rabitqlib/utils/tools.hpp"
 
 // 引入我们自己写的 CUDA 包装类头文件
-#include "rabitqlib/index/ivf_rabitq_raw_cuvs.cuh"
+#include "rabitqlib/index/ivf_rabitq_raw.cuh"
 
 #define private public
 #include "rabitqlib/index/ivf/ivf.hpp"
@@ -262,10 +262,17 @@ int main(int argc, char** argv) {
         global_vec_idx += n; 
     }
 
+    // 1. 提取旋转矩阵
+    size_t rotator_bytes = dim * padded_dim * sizeof(float);
+    std::vector<float> host_rotator(dim * padded_dim);
+    // MatrixRotator 的 save() 方法会直接将 rand_mat_ 的稠密数据 dump 出来
+    cpu_ivf.rotator_->save(reinterpret_cast<char*>(host_rotator.data()));
+
     IVF_RaBitQ_Raw gpu_ivf;
     gpu_ivf.load_from_raw_pointers(
         cpu_ivf.num_, cpu_ivf.dim_, padded_dim, num_cluster, cpu_ivf.ex_bits_,
         h_centroids.data(),
+        host_rotator.data(),
         host_short_data.data(),     
         host_short_factors.data(), 
         host_long_code.data(),      // [新增] 传入 Long Code
@@ -278,10 +285,10 @@ int main(int argc, char** argv) {
     gpu_ivf.best_rescaling_factor = get_const_scaling_factors(padded_dim, cpu_ivf.ex_bits_);
     std::cout<<"best_rescaling_factor: "<<gpu_ivf.best_rescaling_factor<<std::endl;
     
-    std::vector<float> rotated_queries(nq * padded_dim, 0.0f);
-    for(size_t i = 0; i < nq; ++i) {
-        cpu_ivf.rotator_->rotate(query.data() + i * cpu_ivf.dim_, rotated_queries.data() + i * padded_dim);
-    }
+    // std::vector<float> rotated_queries(nq * padded_dim, 0.0f);
+    // for(size_t i = 0; i < nq; ++i) {
+    //     cpu_ivf.rotator_->rotate(query.data() + i * cpu_ivf.dim_, rotated_queries.data() + i * padded_dim);
+    // }
 
     std::vector<size_t> nprobes = {5, 10, 20, 50, 100, 200, 500}; // 不同 nprobe 设置
     size_t length = nprobes.size();
@@ -306,7 +313,7 @@ int main(int argc, char** argv) {
             size_t nprobe = nprobes[l];
             size_t total_correct = 0;
             stopw.reset();
-            gpu_ivf.search(rotated_queries.data(), nq, topk, nprobe, 
+            gpu_ivf.search(query.data(), nq, topk, nprobe, 
                            results_dists.data(), results_pids.data());
             float total_time = stopw.get_elapsed_micro();
             for (size_t i = 0; i < nq; i++) {

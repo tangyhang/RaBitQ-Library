@@ -100,7 +100,8 @@ class IVF {
         size_t,
         size_t,
         MetricType metric_type = rabitqlib::METRIC_L2,
-        RotatorType type = RotatorType::FhtKacRotator
+        // RotatorType type = RotatorType::FhtKacRotator
+        RotatorType type = RotatorType::MatrixRotator
     );
 
     ~IVF();

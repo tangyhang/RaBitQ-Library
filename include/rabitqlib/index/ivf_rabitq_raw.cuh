@@ -5,20 +5,6 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
-// // =========================================================
-// // 【关键修复】：解决 GCC 11 与 NVCC 混合编译 AVX 头文件时的 Bug
-// // NVCC 不认识这个 builtin，直接定义为空让它放行
-// // =========================================================
-// #if defined(__CUDACC__) && !defined(__builtin_ia32_serialize)
-// #define __builtin_ia32_serialize()
-// #endif
-// // ---------------------------------------------------------
-// // 核心魔法：破解 private 权限，让我们能直接读取底层的 ids_ 和 batch_data_
-// // ---------------------------------------------------------
-// #define private public
-// #include "rabitqlib/index/ivf/ivf.hpp"
-// #undef private
-
 static constexpr int WARP_SIZE      = 32;
 constexpr size_t FAST_SIZE = 32;
 
@@ -88,7 +74,7 @@ struct ComputeBitwiseKernelParams {
     const float* d_widths;            // Query 量化的缩放宽度
     const float* d_G_k1xSumq;         // Query 的预计算因子
     const float* d_centroid_distances;// 步骤1中算出的 Query 到 Centroid 距离
-    const float* d_threshold; // 每个 Query 的当前 topk 距离阈值 (用于动态剪枝)
+    float* d_threshold; // 每个 Query 的当前 topk 距离阈值 (用于动态剪枝)
     
     // 底库相关
     const uint32_t* d_short_data;     // 1-bit 底库数据
@@ -118,18 +104,6 @@ struct ComputeBitwiseKernelParams {
     int max_candidates_per_pair;     // max storage per pair, 1000 suggested
   };
 
-// function to extract long codes
-__device__ inline uint32_t extract_code(const uint8_t* codes, size_t d, size_t EX_BITS)
-{
-  size_t bitPos    = d * EX_BITS;
-  size_t byteIdx   = bitPos >> 3;
-  size_t bitOffset = bitPos & 7;
-  uint32_t v       = codes[byteIdx] << 8;
-  if (bitOffset + EX_BITS > 8) { v |= codes[byteIdx + 1]; }
-  int shift = 16 - (bitOffset + EX_BITS);
-  return (v >> shift) & ((1u << EX_BITS) - 1);
-}
-
 class IVF_RaBitQ_Raw {
 private:
     cublasHandle_t cublas_handle;
@@ -153,6 +127,35 @@ private:
     size_t ex_bits = 0;
     size_t padded_dim = 0;
 
+    // ==========================================
+    // 🌟 Workspace Memory Pointers (中间变量池)
+    // ==========================================
+    size_t ws_max_queries = 0;
+    size_t ws_max_topk = 0;
+    size_t ws_max_nprobe = 0;
+
+    float* ws_d_queries = nullptr;
+    float* ws_d_raw_queries = nullptr;
+    float* ws_d_centroid_dists = nullptr;
+    float* ws_d_centroid_dists_copy = nullptr;
+    float* ws_d_q_norms = nullptr;
+    float* ws_d_c_norms = nullptr;
+    float* ws_d_probe_vals = nullptr;
+    int* ws_d_probe_idx = nullptr;
+    ClusterQueryPair* ws_d_sorted_pairs = nullptr;
+    float* ws_d_G_k1xSumq = nullptr;
+    float* ws_d_G_kbxSumq = nullptr;
+    float* ws_d_candidates_dists = nullptr;
+    uint32_t* ws_d_candidates_pids = nullptr;
+    int* ws_d_query_write_counters = nullptr;
+    float* ws_d_final_dev_dists = nullptr;
+    uint32_t* ws_d_final_dev_pids = nullptr;
+    float* ws_d_query_ranges = nullptr;
+    float* ws_d_widths = nullptr;
+    int8_t* ws_d_quantized_queries = nullptr;
+    uint32_t* ws_d_packed_queries = nullptr;
+    float* ws_d_threshold = nullptr;
+
 public:
     IVF_RaBitQ_Raw();
     ~IVF_RaBitQ_Raw();
@@ -160,12 +163,15 @@ public:
     size_t max_cluster_size_ = 0;
     float best_rescaling_factor = 0.0f;
 
-    void load_index(const std::string& index_file);
+    // 🌟 预分配与清理工作区
+    void prepare_workspace(size_t max_queries, size_t max_topk, size_t max_nprobe);
+    void free_workspace();
 
     // 接收原生 C 指针
     void load_from_raw_pointers(
         size_t num_vecs, size_t d, size_t p_d, size_t n_centroids, size_t ex_b,
         const float* h_centroids,
+        const float* h_rotator,
         const uint32_t* h_short_data, 
         const float* h_short_factors,
         const uint8_t* h_long_code,

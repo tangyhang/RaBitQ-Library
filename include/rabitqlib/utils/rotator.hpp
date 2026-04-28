@@ -84,6 +84,7 @@ class MatrixRotator : public Rotator<T> {
             reinterpret_cast<char*>(rand_mat_.data()),
             static_cast<long>(sizeof(float) * this->dim_ * this->padded_dim_)
         );
+        std::cout << "Loaded MatrixRotator with dim: " << this->dim_ << " padded_dim: " << this->padded_dim_ << "\n";
     }
 
     void save(std::ofstream& output) const override {
@@ -251,6 +252,7 @@ class FhtKacRotator : public Rotator<float> {
             reinterpret_cast<char*>(flip_.data()),
             static_cast<long>(sizeof(uint8_t) * flip_.size())
         );
+        std::cout << "flip_ size: " << flip_.size() << "\n";
     }
 
     void save(std::ofstream& output) const override {
