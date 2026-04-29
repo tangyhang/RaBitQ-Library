@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <omp.h> // 引入 OpenMP 头文件
 
 #include "rabitqlib/defines.hpp"
 #include "rabitqlib/index/ivf/ivf.hpp"
@@ -56,34 +57,16 @@ int main(int argc, char** argv) {
     index_type ivf;
     ivf.load(index_file);
 
-    // std::vector<size_t> all_nprobes;
-    // all_nprobes.push_back(5);
-    // for (size_t i = 10; i < 200; i += 10) {
-    //     all_nprobes.push_back(i);
-    // }
-    // for (size_t i = 200; i < 400; i += 40) {
-    //     all_nprobes.push_back(i);
-    // }
-    // for (size_t i = 400; i <= 1500; i += 100) {
-    //     all_nprobes.push_back(i);
-    // }
-    // for (size_t i = 2000; i <= 4000; i += 500) {
-    //     all_nprobes.push_back(i);
-    // }
-
-    // all_nprobes.push_back(6000);
-    // all_nprobes.push_back(10000);
-    // all_nprobes.push_back(15000);
-
     rabitqlib::StopW stopw;
 
-    // auto nprobes = get_nprobes(ivf, all_nprobes, query, gt);
-
-    std::vector<size_t> nprobes = {20, 50, 100, 200, 500}; // 不同 nprobe 设置
+    std::vector<size_t> nprobes = {20, 50, 100, 150, 200, 500};
     size_t length = nprobes.size();
 
     std::vector<std::vector<float>> all_qps(test_round, std::vector<float>(length));
     std::vector<std::vector<float>> all_recall(test_round, std::vector<float>(length));
+
+    // 【关键修改1】提前分配好所有查询的结果存储空间，完全避开循环内的动态分配开销
+    std::vector<std::vector<PID>> all_results(nq, std::vector<PID>(topk));
 
     for (size_t r = 0; r < test_round; r++) {
         for (size_t l = 0; l < length; ++l) {
@@ -92,22 +75,39 @@ int main(int argc, char** argv) {
                 std::cout << "nprobe " << nprobe << " is larger than number of clusters, ";
                 std::cout << "will use nprobe = num_cluster (" << ivf.num_clusters() << ").\n";
             }
-            size_t total_correct = 0;
-            float total_time = 0;
-            std::vector<PID> results(topk);
+            
+            // ---------------- 1. 计时与搜索阶段 ----------------
+            stopw.reset(); 
+
+            int thread_count = 64; // 设定为你想要的线程数
+
+            // 只在这个循环中开启 8 个线程
+            #pragma omp parallel for num_threads(thread_count)
             for (size_t i = 0; i < nq; i++) {
-                stopw.reset();
-                ivf.search(&query(i, 0), topk, nprobe, results.data(), use_hacc);
-                total_time += stopw.get_elapsed_micro();
+                // 每个线程将结果写入预先分配好的独立内存地址，不会产生数据竞争
+                ivf.search(&query(i, 0), topk, nprobe, all_results[i].data(), use_hacc);
+            }
+            
+            // 仅将纯搜索时间计入墙上时间
+            float total_time = stopw.get_elapsed_micro(); 
+
+            // ---------------- 2. 精度评估阶段 ----------------
+            size_t total_correct = 0;
+            
+            // 精度计算同样可以使用多线程加速，通过 reduction 安全合并正确数
+            #pragma omp parallel for reduction(+:total_correct)
+            for (size_t i = 0; i < nq; i++) {
                 for (size_t j = 0; j < topk; j++) {
                     for (size_t k = 0; k < topk; k++) {
-                        if (gt(i, k) == results[j]) {
+                        if (gt(i, k) == all_results[i][j]) {
                             total_correct++;
                             break;
                         }
                     }
                 }
             }
+
+            // ---------------- 3. 指标计算阶段 ----------------
             float qps = static_cast<float>(nq) / (total_time / 1e6F);
             float recall =
                 static_cast<float>(total_correct) / static_cast<float>(total_count);
@@ -144,22 +144,32 @@ static std::vector<size_t> get_nprobes(
     float old_recall = 0;
     std::vector<size_t> nprobes;
 
+    // 同样，为辅助函数预分配内存
+    std::vector<std::vector<PID>> all_results(nq, std::vector<PID>(topk));
+
     for (auto nprobe : all_nprobes) {
         nprobes.push_back(nprobe);
 
-        size_t total_correct = 0;
-        std::vector<PID> results(topk);
+        // 搜索阶段
+        #pragma omp parallel for
         for (size_t i = 0; i < nq; i++) {
-            ivf.search(&query(i, 0), topk, nprobe, results.data());
+            ivf.search(&query(i, 0), topk, nprobe, all_results[i].data());
+        }
+
+        // 验证阶段
+        size_t total_correct = 0;
+        #pragma omp parallel for reduction(+:total_correct)
+        for (size_t i = 0; i < nq; i++) {
             for (size_t j = 0; j < topk; j++) {
                 for (size_t k = 0; k < topk; k++) {
-                    if (gt(i, k) == results[j]) {
+                    if (gt(i, k) == all_results[i][j]) {
                         total_correct++;
                         break;
                     }
                 }
             }
         }
+
         float recall = static_cast<float>(total_correct) / static_cast<float>(total_count);
         if (recall > 0.997 || recall - old_recall < 1e-5) {
             break;

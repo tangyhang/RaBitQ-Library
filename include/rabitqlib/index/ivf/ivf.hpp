@@ -600,7 +600,7 @@ inline void IVF::search(
     knns.copy_results(results);
 
     // 【新增】：一次完整的 query 搜索结束后，打印统计信息
-    tls_query_stats.print();
+    // tls_query_stats.print();
 }
 
 inline void IVF::search_cluster(
